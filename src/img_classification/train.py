@@ -20,44 +20,6 @@ def prepare_batch(images: torch.Tensor, device: torch.device) -> torch.Tensor:
     return images.to(device, non_blocking=True).to(torch.float32).div_(255)
 
 
-# def train_one_epoch(
-#     model: CNN,
-#     loader: DataLoader,
-#     loss_fn: torch.nn.Module,
-#     optimizer: torch.optim.Optimizer,
-#     device: torch.device,
-#     scaler: torch.amp.GradScaler | None = None,
-# ) -> tuple[float, float]:
-#     model.train()
-#     total_loss = 0.0
-#     total_correct = 0
-#     total_examples = 0
-
-#     for images, labels in loader:
-#         images = prepare_batch(images, device)
-#         labels = labels.to(device, non_blocking=True)
-
-#         optimizer.zero_grad(set_to_none=True)
-#         with torch.autocast(device_type=device.type, enabled=scaler is not None):
-#             logits = model(images)
-#             loss = loss_fn(logits, labels)
-#         if not torch.isfinite(loss):
-#             raise RuntimeError("Non-finite training loss; check data and learning rate")
-#         if scaler is not None:
-#             scaler.scale(loss).backward()
-#             scaler.step(optimizer)
-#             scaler.update()
-#         else:
-#             loss.backward()
-#             optimizer.step()
-
-#         batch_size = labels.size(0)
-#         total_loss += loss.item() * batch_size
-#         total_correct += (logits.argmax(dim=1) == labels).sum().item()
-#         total_examples += batch_size
-
-#     return total_loss / total_examples, total_correct / total_examples
-
 def train_one_epoch(
     model: CNN,
     loader: DataLoader,
@@ -79,35 +41,14 @@ def train_one_epoch(
         with torch.autocast(device_type=device.type, enabled=scaler is not None):
             logits = model(images)
             loss = loss_fn(logits, labels)
-
         if not torch.isfinite(loss):
             raise RuntimeError("Non-finite training loss; check data and learning rate")
-
         if scaler is not None:
             scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)  # Đưa gradient về giá trị thực trước khi tính norm
-        else:
-            loss.backward()
-
-        # 1. Kiểm tra gradient norm của từng layer
-        grad_norms = [p.grad.norm().item() for p in model.parameters() if p.grad is not None]
-
-        if not grad_norms:
-            print("[CẢNH BÁO]: Không có gradient nào được tính! Kiểm tra require_grad hoặc loss.backward().")
-        elif all(g == 0.0 for g in grad_norms):
-            print("[CẢNH BÁO]: Gradient bị triệt tiêu hoàn toàn về 0.0 (Dying ReLU hoặc Vanishing Gradient)!")
-        else:
-            print(f"Gradient norm min: {min(grad_norms):.6f}, max: {max(grad_norms):.6f}")
-
-        # 2. Kiểm tra xem scaler có skip optimizer step không (nếu dùng FP16)
-        if scaler is not None:
-            scale_before = scaler.get_scale()
             scaler.step(optimizer)
             scaler.update()
-            scale_after = scaler.get_scale()
-            if scale_after < scale_before:
-                print("[CẢNH BÁO]: Gradient bị inf/NaN, scaler đã skip bước cập nhật optimizer!")
         else:
+            loss.backward()
             optimizer.step()
 
         batch_size = labels.size(0)
@@ -116,6 +57,65 @@ def train_one_epoch(
         total_examples += batch_size
 
     return total_loss / total_examples, total_correct / total_examples
+
+# def train_one_epoch(
+#     model: CNN,
+#     loader: DataLoader,
+#     loss_fn: torch.nn.Module,
+#     optimizer: torch.optim.Optimizer,
+#     device: torch.device,
+#     scaler: torch.amp.GradScaler | None = None,
+# ) -> tuple[float, float]:
+#     model.train()
+#     total_loss = 0.0
+#     total_correct = 0
+#     total_examples = 0
+
+#     for images, labels in loader:
+#         images = prepare_batch(images, device)
+#         labels = labels.to(device, non_blocking=True)
+
+#         optimizer.zero_grad(set_to_none=True)
+#         with torch.autocast(device_type=device.type, enabled=scaler is not None):
+#             logits = model(images)
+#             loss = loss_fn(logits, labels)
+
+#         if not torch.isfinite(loss):
+#             raise RuntimeError("Non-finite training loss; check data and learning rate")
+
+#         if scaler is not None:
+#             scaler.scale(loss).backward()
+#             scaler.unscale_(optimizer)  # Đưa gradient về giá trị thực trước khi tính norm
+#         else:
+#             loss.backward()
+
+#         # 1. Kiểm tra gradient norm của từng layer
+#         grad_norms = [p.grad.norm().item() for p in model.parameters() if p.grad is not None]
+
+#         if not grad_norms:
+#             print("[CẢNH BÁO]: Không có gradient nào được tính! Kiểm tra require_grad hoặc loss.backward().")
+#         elif all(g == 0.0 for g in grad_norms):
+#             print("[CẢNH BÁO]: Gradient bị triệt tiêu hoàn toàn về 0.0 (Dying ReLU hoặc Vanishing Gradient)!")
+#         else:
+#             print(f"Gradient norm min: {min(grad_norms):.6f}, max: {max(grad_norms):.6f}")
+
+#         # 2. Kiểm tra xem scaler có skip optimizer step không (nếu dùng FP16)
+#         if scaler is not None:
+#             scale_before = scaler.get_scale()
+#             scaler.step(optimizer)
+#             scaler.update()
+#             scale_after = scaler.get_scale()
+#             if scale_after < scale_before:
+#                 print("[CẢNH BÁO]: Gradient bị inf/NaN, scaler đã skip bước cập nhật optimizer!")
+#         else:
+#             optimizer.step()
+
+#         batch_size = labels.size(0)
+#         total_loss += loss.item() * batch_size
+#         total_correct += (logits.argmax(dim=1) == labels).sum().item()
+#         total_examples += batch_size
+
+#     return total_loss / total_examples, total_correct / total_examples
 
 @torch.no_grad()
 def evaluate(
