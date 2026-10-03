@@ -14,6 +14,9 @@ class CNN(nn.Module):
             nn.Conv2d(3 if index == 0 else 32, 32, kernel_size=3, bias=True)
             for index in range(8)
         ])
+        self.batch_norms = nn.ModuleList([
+            nn.BatchNorm2d(32) for _ in range(8)
+        ])
         self.pool = nn.MaxPool2d(kernel_size=3)
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc1 = nn.Linear(32, 3, bias=True)
@@ -53,9 +56,10 @@ class CNN(nn.Module):
 
         # Eight unpadded 3x3 convolutions shrink 32x32 inputs to 16x16.
         relu_features = x
-        for conv in self.convs:
+        for conv, batch_norm in zip(self.convs, self.batch_norms):
             conv_features = conv(relu_features)
-            relu_features = self.relu(conv_features)
+            normalized_features = batch_norm(conv_features)
+            relu_features = self.relu(normalized_features)
         pooled_features = self.pool(relu_features)
         pooled_features = self.avgpool(pooled_features)
         flattened_features = torch.flatten(pooled_features, start_dim=1)
