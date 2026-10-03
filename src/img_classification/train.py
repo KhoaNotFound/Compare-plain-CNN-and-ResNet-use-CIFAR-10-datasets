@@ -85,34 +85,28 @@ def train_one_epoch(
 
         if scaler is not None:
             scaler.scale(loss).backward()
-            # Bắt buộc unscale trước khi truy cập hoặc thao tác trên gradient
-            scaler.unscale_(optimizer)
+            scaler.unscale_(optimizer)  # Đưa gradient về giá trị thực trước khi tính norm
         else:
             loss.backward()
 
-        # ======================= ĐOẠN KIỂM TRA GRADIENT =======================
-        total_norm_sq = 0.0
-        for name, param in model.named_parameters():
-            if not param.requires_grad:
-                continue
-            if param.grad is None:
-                raise RuntimeError(f"Gradient bị thiếu (None) tại layer: {name}")
-            if not torch.isfinite(param.grad).all():
-                raise RuntimeError(f"Gradient chứa NaN hoặc Inf tại layer: {name}")
+        # 1. Kiểm tra gradient norm của từng layer
+        grad_norms = [p.grad.norm().item() for p in model.parameters() if p.grad is not None]
 
-            param_norm = param.grad.detach().norm(2)
-            total_norm_sq += param_norm.item() ** 2
+        if not grad_norms:
+            print("[CẢNH BÁO]: Không có gradient nào được tính! Kiểm tra require_grad hoặc loss.backward().")
+        elif all(g == 0.0 for g in grad_norms):
+            print("[CẢNH BÁO]: Gradient bị triệt tiêu hoàn toàn về 0.0 (Dying ReLU hoặc Vanishing Gradient)!")
+        else:
+            print(f"Gradient norm min: {min(grad_norms):.6f}, max: {max(grad_norms):.6f}")
 
-        total_grad_norm = total_norm_sq**0.5
-        # Kiểm tra vanishing gradient (ngưỡng tùy chọn, ví dụ 1e-7)
-        if total_grad_norm < 1e-7:
-            # Có thể cảnh báo hoặc ghi log
-            pass
-        # ======================================================================
-
+        # 2. Kiểm tra xem scaler có skip optimizer step không (nếu dùng FP16)
         if scaler is not None:
+            scale_before = scaler.get_scale()
             scaler.step(optimizer)
             scaler.update()
+            scale_after = scaler.get_scale()
+            if scale_after < scale_before:
+                print("[CẢNH BÁO]: Gradient bị inf/NaN, scaler đã skip bước cập nhật optimizer!")
         else:
             optimizer.step()
 
