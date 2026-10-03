@@ -1,0 +1,8 @@
+# Shared by local training and Kaggle. CLI flags override these values.
+[training]
+epochs = 20
+batch_size = 128
+lr = 0.001
+seed = 42
+val_fraction = 0.1
+amp = true

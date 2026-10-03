@@ -1,15 +1,6 @@
-#%%
-from datasets import load_dataset
-from datasets import load_from_disk
-from img_classification.config import RAW_DIR
-#%%
-#load data
-dataset = load_dataset("uoft-cs/cifar10")
+"""Compatibility entry point; prefer python -m img_classification.prepare_data."""
 
-#inspect schema
-print(dataset)
-classes = dataset["train"].features["label"].names
-print(classes)
+from img_classification.prepare_data import main
 
-#save data to data/raw
-dataset.save_to_disk(str(RAW_DIR))
+if __name__ == "__main__":
+    main()

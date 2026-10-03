@@ -10,3 +10,10 @@ wheels/
 .venv
 #data
 data/
+
+# Training artifacts and local credentials
+outputs/
+.kaggle/
+kaggle.json
+.env
+.env.*
