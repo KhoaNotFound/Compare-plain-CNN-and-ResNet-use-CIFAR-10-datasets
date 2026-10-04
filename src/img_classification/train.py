@@ -22,7 +22,7 @@ def prepare_batch(images: torch.Tensor, device: torch.device) -> torch.Tensor:
 
 
 def train_one_epoch(
-    model: CNN,
+    model: torch.nn.Module,
     loader: DataLoader,
     loss_fn: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
@@ -61,7 +61,7 @@ def train_one_epoch(
 
 @torch.no_grad()
 def evaluate(
-    model: CNN,
+    model: torch.nn.Module,
     loader: DataLoader,
     device: torch.device,
     preview_count: int = 16,
@@ -245,7 +245,11 @@ def main(argv: list[str] | None = None) -> None:
                "device": str(device), "amp_enabled": scaler is not None,
                "config": config.to_dict(), "torch_version": str(torch.__version__)}, output / "metrics.json")
     plot_predictions(images, labels, predictions, class_names, output / "predictions.png")
+    save_checkpoint({"images": images, "labels": labels, "predictions": predictions,
+                     "class_names": class_names, "test_accuracy": test_accuracy},
+                    output / "test_preview.pt")
     print(f"Best epoch: {best_epoch}; test accuracy: {test_accuracy:.2%}", flush=True)
+    print(f"Test sample plot: {(output / 'predictions.png').resolve()}", flush=True)
 
 
 if __name__ == "__main__":

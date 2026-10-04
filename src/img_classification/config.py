@@ -13,7 +13,7 @@ import tomllib
 
 @dataclass(frozen=True)
 class TrainConfig:
-    epochs: int = 20
+    epochs: int = 50
     batch_size: int = 128
     lr: float = 0.001
     seed: int = 42

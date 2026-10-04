@@ -4,6 +4,13 @@ ResNet vẫn là mạng CNN. Biến thể nhỏ trong dự án dùng cùng 8 Con
 ReLU và head với CNN; thêm **identity skip connection** qua 3 cặp Conv.
 Đây là ResNet phục vụ đối chứng, không phải ResNet-18 chuẩn.
 
+Hai kiến trúc được viết độc lập trong `models/cnn.py` và `models/resnet.py`,
+đều kế thừa trực tiếp `nn.Module`. Mỗi file có layers, khởi tạo weights và
+forward riêng; CNN không chứa cờ residual. Chỉ phần vẽ activations dùng chung.
+Khi chạy `uv run train.py`, hai kiến trúc được in cạnh nhau trước khi train,
+kèm đường đi forward và vị trí skip, rồi lưu vào `architectures.txt` trong
+thư mục kết quả. Log mỗi epoch hiển thị CNN và ResNet cạnh nhau.
+
 | Thành phần | CNN trong benchmark | ResNet trong benchmark |
 | --- | --- | --- |
 | Input | RGB 3×32×32 | RGB 3×32×32 |
@@ -43,8 +50,8 @@ Internet cho lần tải dữ liệu đầu, rồi chạy:
 uv run train.py
 ```
 
-Lệnh tự chuẩn bị CIFAR-10 nếu chưa có cache, train CNN rồi ResNet, mỗi model
-20 epochs theo `configs/cifar10.toml`, tự chọn CUDA và AMP nếu có GPU. Dùng một
+Lệnh tự chuẩn bị CIFAR-10 nếu chưa có cache, train đồng thời CNN và ResNet, mỗi model
+50 epochs theo `configs/cifar10.toml`, tự chọn CUDA và AMP nếu có GPU. Dùng một
 GPU; nếu không có CUDA sẽ chạy CPU và ghi device vào báo cáo. Chạy notebook
 thì thêm `!` trước lệnh. Cần có `uv` trong môi trường.
 
@@ -59,8 +66,9 @@ Mỗi thư mục `cnn/`, `resnet/` có checkpoint, metrics, split và prediction
 Không có số liệu benchmark giả lập: accuracy và hiệu năng được ghi từ lần chạy.
 Thời gian train gồm truyền dữ liệu và optimizer; có đồng bộ CUDA trước/sau đo.
 Peak memory là tensor memory được cấp phát trong train/validation, không phải
-VRAM reserved. Model chạy lần lượt CNN rồi ResNet nên nhiệt độ GPU/cache hệ
-thống có thể ảnh hưởng thời gian; không coi đây là phép đo latency inference.
+VRAM reserved, ghi riêng từng tiến trình. Hai model dùng chung GPU khi chạy
+đồng thời nên thời gian có ảnh hưởng tranh chấp tài nguyên; không phải phép đo
+hiệu năng riêng lẻ hay latency inference.
 
 Có thể tùy chỉnh mà không sửa code:
 

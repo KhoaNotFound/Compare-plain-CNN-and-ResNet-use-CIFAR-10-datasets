@@ -4,14 +4,13 @@ import torch
 import torch.nn as nn
 import torch.nn.init as init
 
+from .visualization import plot_activations
+
 class CNN(nn.Module):
     """Eight Conv + ReLU layers followed by pooling and two Linear layers."""
 
-    def __init__(self, *args: Any, padding: int = 0, residual: bool = False, **kwargs: Any) -> None:
+    def __init__(self, *args: Any, padding: int = 0, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        if residual and padding != 1:
-            raise ValueError("Residual connections require padding=1")
-        self.residual = residual
 
         self.convs = nn.ModuleList([
             nn.Conv2d(3 if index == 0 else 32, 32, kernel_size=3, padding=padding, bias=True)
@@ -27,7 +26,7 @@ class CNN(nn.Module):
         self.relu = nn.ReLU()
         self.conv_weight_init()
         self.fc_weight_init()
-        
+
     def conv_weight_init(self):
         for conv in self.convs:
             init.kaiming_uniform_(
@@ -37,8 +36,8 @@ class CNN(nn.Module):
             )
             if conv.bias is not None:
                 init.zeros_(conv.bias)
-        
-    
+
+
     def fc_weight_init(self):
         init.kaiming_uniform_(
             self.fc1.weight,
@@ -59,15 +58,9 @@ class CNN(nn.Module):
 
         # Legacy padding=0 shrinks to 16x16; benchmark padding=1 keeps 32x32.
         relu_features = x
-        for index, (conv, batch_norm) in enumerate(zip(self.convs, self.batch_norms)):
-            # Layers 1–2 form the stem; pairs 3–4, 5–6, 7–8 form blocks.
-            if index in (2, 4, 6):
-                identity = relu_features
+        for conv, batch_norm in zip(self.convs, self.batch_norms):
             conv_features = conv(relu_features)
             normalized_features = batch_norm(conv_features)
-            # The ONLY extra operation in ResNet: add the block input before ReLU.
-            if self.residual and index in (3, 5, 7):
-                normalized_features = normalized_features + identity
             relu_features = self.relu(normalized_features)
         pooled_features = self.pool(relu_features)
         pooled_features = self.avgpool(pooled_features)
@@ -78,78 +71,17 @@ class CNN(nn.Module):
         logits = self.fc2(fc1_activated)
 
         if visualize:
-            self._plot_activations(
+            plot_activations(
                 x,
                 conv_features,
                 relu_features,
                 pooled_features,
                 fc1_activated,
                 logits,
+                model_name=type(self).__name__,
             )
 
         return logits
 
     def forward(self, x: torch.Tensor, visualize: bool = False) -> torch.Tensor:
         return self.feed_forward(x, visualize=visualize)
-
-    @staticmethod
-    def _plot_activations(
-        inputs: torch.Tensor,
-        conv_features: torch.Tensor,
-        relu_features: torch.Tensor,
-        pooled_features: torch.Tensor,
-        fc1_features: torch.Tensor,
-        logits: torch.Tensor,
-    ) -> None:
-        """Plot the last convolution's feature maps and dense activations."""
-        import matplotlib.pyplot as plt
-
-        stages = (
-            ("Conv2d 8", conv_features),
-            ("ReLU after Conv2d 8", relu_features),
-            ("MaxPool + AdaptiveAvgPool", pooled_features),
-        )
-        max_maps = 16
-        dense_stages = (("FC1 + ReLU", fc1_features), ("FC2 logits", logits))
-        fig = plt.figure(figsize=(12, 14))
-        grid = fig.add_gridspec(
-            1 + len(stages) + len(dense_stages),
-            1,
-            height_ratios=[4] + [3] * len(stages) + [1] * len(dense_stages),
-        )
-
-        input_ax = fig.add_subplot(grid[0, 0])
-        input_image = inputs[0].detach().cpu().permute(1, 2, 0).clamp(0, 1)
-        input_ax.imshow(input_image)
-        input_ax.set_title("Original input image (first image in batch)")
-        input_ax.axis("off")
-
-        for row, (stage_name, activations) in enumerate(stages):
-            feature_maps = activations[0].detach().cpu()
-            shown_maps = min(feature_maps.shape[0], max_maps)
-            stage_grid = grid[row + 1, 0].subgridspec(1, max_maps)
-            for col in range(max_maps):
-                ax = fig.add_subplot(stage_grid[0, col])
-                ax.axis("off")
-                if col < shown_maps:
-                    ax.imshow(feature_maps[col], cmap="viridis")
-                    if row == 0:
-                        ax.set_title(f"Map {col}", fontsize=8)
-            fig.text(0.01, 0.73 - row * 0.17, stage_name, rotation=90, va="center")
-
-        for row_offset, (stage_name, activations) in enumerate(
-            dense_stages, start=1 + len(stages)
-        ):
-            values = activations[0].detach().cpu().flatten()
-            ax = fig.add_subplot(grid[row_offset, 0])
-            ax.bar(range(values.numel()), values.numpy())
-            ax.set_title(stage_name, loc="left", fontsize=9)
-            ax.set_xticks(range(values.numel()))
-            ax.set_xlabel("Neuron")
-
-        fig.suptitle("CNN activations for the first image in the batch")
-        fig.tight_layout(rect=(0.04, 0, 1, 0.98))
-        
-        
-        
-        plt.show()

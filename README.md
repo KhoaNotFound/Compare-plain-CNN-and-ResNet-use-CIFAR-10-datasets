@@ -12,10 +12,27 @@ Bật GPU, mở terminal tại thư mục repository và chạy:
 uv run train.py
 ```
 
-Tự chuẩn bị CIFAR-10, train CNN rồi ResNet với cấu hình trong
+Tự chuẩn bị CIFAR-10, train đồng thời CNN và ResNet với cấu hình trong
 `configs/cifar10.toml`, xuất bảng so sánh accuracy/thời gian/VRAM và biểu đồ
 vào `outputs/benchmark/<timestamp>/`. Xem [kiến trúc và cách so sánh](docs/cnn-vs-resnet.md).
 Cặp đối chứng cùng 8 Conv và head; ResNet thêm 3 skip connection.
+Hai model độc lập, mỗi model train 50 epoch. Log trực tiếp ghép theo cùng epoch:
+
+```text
+Epoch 1/50 | CNN: loss=... train=... validation=... | ResNet: loss=... train=... validation=...
+```
+
+Log chung lưu ở `training.log`; log từng model ở `cnn.log`, `resnet.log`.
+Sau khi hoàn tất, mở các plot trong thư mục kết quả:
+
+- `test_predictions.png`: cùng 16 ảnh test đầu tiên, nhãn thật và dự đoán của cả hai model; xanh đúng, đỏ sai.
+- `test_accuracy.png`: accuracy trên toàn bộ tập test của hai model.
+- `benchmark.png`: loss, validation accuracy và thời gian theo epoch.
+
+Plot phân biệt accuracy của subset với accuracy toàn tập test. Dự đoán dùng
+checkpoint tốt nhất theo validation trong 50 epoch. Lệnh terminal lưu PNG và
+in đường dẫn; nếu chạy bằng `!uv run train.py` trong notebook, mở PNG trong
+trình duyệt file Kaggle để xem.
 
 ## Bắt đầu: kết nối và chạy
 
@@ -39,7 +56,7 @@ sẵn có ở `~/.kaggle/kaggle.json`; không đưa token vào repo hoặc noteb
 `push` thực sự gửi code và khởi chạy job GPU private. Sau khi gửi thành công,
 không cần giữ máy cá nhân mở.
 
-Mặc định: 20 epochs, batch 128, Adam lr 0.001, seed 42, 10% tập train dành cho
+Mặc định: 50 epochs, batch 128, Adam lr 0.001, seed 42, 10% tập train dành cho
 validation, AMP khi dùng CUDA. Thay đổi tại [configs/cifar10.toml](configs/cifar10.toml).
 Có thể ghi đè cho từng run:
 
@@ -64,7 +81,8 @@ src/img_classification/
   config.py                   Đọc/kiểm tra cấu hình, đường dẫn dữ liệu
   dataset.py                  Hợp đồng tensor cache và chuyển ảnh
   prepare_data.py             Tải CIFAR-10 và tạo cache uint8
-  models/cnn.py               Nguồn duy nhất của kiến trúc CNN hiện tại
+  models/cnn.py               Kiến trúc và forward riêng của CNN
+  models/resnet.py            Kiến trúc và forward riêng của ResNet
   model.py                    Import tương thích code cũ
   train.py                    Train → validation → best model → test
   artifacts.py                Ghi JSON/checkpoint qua file tạm rồi thay thế
@@ -78,7 +96,9 @@ docs/engineering-playbook.md  Quy trình thiết kế áp dụng cho dự án sa
 ```
 
 `data/`, `build/`, `outputs/`, `.venv/` không vào Git. `models/resnet.py`
-triển khai ResNet nhỏ dùng cùng backbone CNN với padding 1, thêm identity skip.
+triển khai ResNet nhỏ độc lập, kế thừa trực tiếp `nn.Module`, với padding 1 và identity skip.
+Hai model khai báo layers và forward riêng; sửa CNN không tự thay đổi ResNet.
+Benchmark in hai kiến trúc cạnh nhau trước khi train và lưu `architectures.txt`.
 CNN mặc định giữ padding 0 để tương thích các lệnh train đơn cũ.
 
 ## Phát triển và kiểm tra local

@@ -1,4 +1,4 @@
-"""Run matched CNN/ResNet training sequentially and export measured results."""
+"""Train independent CNN/ResNet concurrently with paired live epoch logs."""
 import argparse
 import csv
 from datetime import datetime, timezone
@@ -7,9 +7,137 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from itertools import zip_longest
+from queue import Queue
+import re
+from threading import Thread
 
 from .artifacts import save_json
 from .config import load_train_config
+
+
+def train_models(output: Path, common: list[str], env: dict[str, str]) -> None:
+    """Stream both child processes and pair metrics by epoch, never by arrival order."""
+    events = Queue()
+    processes = {}
+    readers = []
+    epochs = {}
+
+    def read_output(name, process):
+        with (output / f'{name}.log').open('w') as log:
+            for line in process.stdout:
+                log.write(line)
+                log.flush()
+                events.put((name, line.rstrip()))
+        events.put((name, None))
+
+    print('\nEpoch | CNN: loss / train / validation | ResNet: loss / train / validation', flush=True)
+    try:
+        for name in ('cnn', 'resnet'):
+            processes[name] = subprocess.Popen(
+                [sys.executable, '-u', '-m', 'img_classification.train', '--model', name,
+                 '--output-dir', str(output / name), *common], env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            reader = Thread(target=read_output, args=(name, processes[name]), daemon=True)
+            reader.start()
+            readers.append(reader)
+        finished = set()
+        with (output / 'training.log').open('w') as log:
+            while len(finished) < 2:
+                name, line = events.get()
+                if line is None:
+                    code = processes[name].wait()
+                    if code:
+                        raise RuntimeError(f'{name.upper()} training failed (exit {code}); see {output / (name + ".log")}')
+                    finished.add(name)
+                    continue
+                match = re.fullmatch(r'Epoch (\d+)/(\d+): (.*)', line)
+                if match:
+                    epoch, total, metrics = match.groups()
+                    row = epochs.setdefault(int(epoch), {})
+                    row[name] = metrics
+                    if len(row) < 2:
+                        continue
+                    line = f"Epoch {epoch}/{total} | CNN: {row['cnn']} | ResNet: {row['resnet']}"
+                else:
+                    line = f'[{name.upper()}] {line}'
+                print(line, flush=True)
+                log.write(line + '\n')
+                log.flush()
+    finally:
+        for process in processes.values():
+            if process.poll() is None:
+                process.terminate()
+        for process in processes.values():
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        for reader in readers:
+            reader.join(timeout=10)
+        for process in processes.values():
+            process.stdout.close()
+
+
+def architecture_comparison() -> str:
+    """Show the independent models without changing the training RNG."""
+    import torch
+    from .models import CNN, ResNet
+
+    with torch.random.fork_rng(devices=[]):
+        cnn = CNN(padding=1)
+        resnet = ResNet()
+    left = ['CNN — models/cnn.py', *str(cnn).splitlines(),
+            'Forward: Conv → BN → ReLU (8 layers) → pool → head']
+    right = ['ResNet — models/resnet.py', *str(resnet).splitlines(),
+             'Forward: stem → 3 blocks ReLU(F(x) + x) → pool → head']
+    width = max(map(len, left))
+    return '\n'.join(f'{a:<{width}} | {b}' for a, b in zip_longest(left, right, fillvalue=''))
+
+
+def plot_test_comparison(output: Path) -> None:
+    """Compare the same test examples and distinguish sample/full-test accuracy."""
+    import matplotlib.pyplot as plt
+    import torch
+
+    previews = {name: torch.load(output / name / 'test_preview.pt', weights_only=True,
+                                 map_location='cpu') for name in ('cnn', 'resnet')}
+    cnn, resnet = previews.values()
+    if not torch.equal(cnn['images'], resnet['images']) or not torch.equal(cnn['labels'], resnet['labels']):
+        raise ValueError('Test preview examples differ between models')
+    count = len(cnn['images'])
+    fig, axes = plt.subplots((count + 3) // 4, 4, figsize=(16, 4 * ((count + 3) // 4)), squeeze=False)
+    for index, ax in enumerate(axes.flat):
+        ax.axis('off')
+        if index >= count:
+            continue
+        label = cnn['labels'][index].item()
+        ax.imshow(cnn['images'][index].permute(1, 2, 0).clamp(0, 1))
+        ax.set_title(f"True: {cnn['class_names'][label]}")
+        for row, (name, preview) in enumerate(previews.items()):
+            prediction = preview['predictions'][index].item()
+            correct = prediction == label
+            ax.text(0.5, -0.06 - row * 0.10,
+                    f"{name.upper()}: {preview['class_names'][prediction]} ({'correct' if correct else 'wrong'})",
+                    color='green' if correct else 'red', ha='center', va='top', transform=ax.transAxes)
+    summary = ' | '.join(f"{name.upper()} full test: {preview['test_accuracy']:.2%}; "
+                         f"shown subset: {(preview['labels'] == preview['predictions']).float().mean().item():.2%}"
+                         for name, preview in previews.items())
+    fig.suptitle(f'First {count} held-out test images — best validation checkpoints\n{summary}')
+    fig.tight_layout(rect=(0, 0.03, 1, 0.94), h_pad=4)
+    fig.savefig(output / 'test_predictions.png', dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+    bars = ax.bar([name.upper() for name in previews],
+                  [100 * preview['test_accuracy'] for preview in previews.values()])
+    ax.bar_label(bars, fmt='%.2f%%', padding=4)
+    ax.set(ylim=(0, 105), ylabel='Accuracy (%)', title='Full held-out test accuracy')
+    fig.tight_layout()
+    fig.savefig(output / 'test_accuracy.png', dpi=150)
+    plt.close(fig)
+    print(summary, flush=True)
 
 
 def main() -> None:
@@ -33,6 +161,9 @@ def main() -> None:
     if output.exists() and any(output.iterdir()):
         parser.error(f'Run already exists: {output}. Choose a fresh --output-dir.')
     output.mkdir(parents=True, exist_ok=True)
+    architectures = architecture_comparison()
+    print(architectures, flush=True)
+    (output / 'architectures.txt').write_text(architectures + '\n')
     # Each model gets a fresh process, RNG, loader, optimizer and CUDA allocator.
     env = {**os.environ, 'MPLBACKEND': 'Agg'}
     save_json(config.to_dict(), output / 'config.json')
@@ -45,10 +176,8 @@ def main() -> None:
             common.extend(['--' + key.replace('_', '-'), str(value)])
     results = []
     histories = {}
+    train_models(output, common, env)
     for name in ('cnn', 'resnet'):
-        print(f'\n=== Benchmark: {name.upper()} ===', flush=True)
-        subprocess.run([sys.executable, '-m', 'img_classification.train', '--model', name,
-                        '--output-dir', str(output / name), *common], env=env, check=True)
         metrics = json.loads((output / name / 'metrics.json').read_text())
         histories[name] = metrics['history']
         results.append({key: metrics[key] for key in (
@@ -74,7 +203,8 @@ def main() -> None:
     delta = 100 * (results[1]['test_accuracy'] - results[0]['test_accuracy'])
     report += ['', f'ResNet − CNN test accuracy: {delta:+.2f} percentage points.', '',
                'Matched padded CNN vs small ResNet; only three identity additions differ.',
-               'One seed, fixed CNN-then-ResNet order; this is not statistical evidence of superiority.',
+               'One seed; this is not statistical evidence of superiority.',
+               'Models train concurrently on the selected device; timings include resource contention.',
                'Train seconds include batches, transfers and optimizer steps, including first-epoch startup.',
                'Wall seconds also include validation and checkpoints, excluding data preparation and final test.',
                'Peak CUDA memory is allocated tensor memory during training/validation, not reserved GPU memory.',
@@ -93,8 +223,11 @@ def main() -> None:
     fig.tight_layout()
     fig.savefig(output / 'benchmark.png', dpi=160)
     plt.close(fig)
+    plot_test_comparison(output)
     print('\n'.join(report), flush=True)
     print(f'\nArtifacts: {output.resolve()}', flush=True)
+    for filename in ('test_predictions.png', 'test_accuracy.png', 'benchmark.png'):
+        print(f'Plot: {(output / filename).resolve()}', flush=True)
 
 
 if __name__ == '__main__':
