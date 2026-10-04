@@ -13,9 +13,9 @@ import tomllib
 
 @dataclass(frozen=True)
 class TrainConfig:
-    epochs: int = 50
-    batch_size: int = 128
-    lr: float = 0.001
+    epochs: int = 100
+    batch_size: int = 64
+    lr: float = 0.01
     seed: int = 42
     val_fraction: float = 0.1
     amp: bool = True
