@@ -13,9 +13,54 @@ import torch
 
 from img_classification.models import CNN, ResNet
 from img_classification.benchmark import model_devices, train_models
+from img_classification.gradients import GradientMonitor
 
 
 class BenchmarkTests(unittest.TestCase):
+    def test_gradient_statistics_and_invalid_batches(self):
+        model = torch.nn.Sequential(torch.nn.Conv2d(1, 1, 1), torch.nn.Conv2d(1, 1, 1))
+        monitor = GradientMonitor(model)
+        for first, last in ((1., 2.), (3., 2.), (float('inf'), 0.)):
+            model[0].weight.grad = torch.full_like(model[0].weight, first)
+            model[1].weight.grad = torch.full_like(model[1].weight, last)
+            monitor.record()
+        result = monitor.summary()
+        self.assertEqual(result['layers']['0']['rms_mean'], 2.)
+        self.assertEqual(result['layers']['0']['rms_std'], 1.)
+        self.assertEqual(result['layers']['0']['rms_cv'], .5)
+        self.assertEqual(result['layers']['0']['nonfinite_batches'], 1)
+        self.assertAlmostEqual(result['layers']['1']['near_zero_fraction'], 1 / 3)
+        self.assertAlmostEqual(result['first_last_rms_ratio'], 1.5)
+        json.dumps(result, allow_nan=False)
+        zero = GradientMonitor(model)
+        for layer in model:
+            layer.weight.grad.zero_()
+        zero.record()
+        self.assertIsNone(zero.summary()['first_last_rms_ratio'])
+        self.assertIsNone(zero.summary()['layers']['0']['rms_cv'])
+
+    def test_monitor_does_not_change_updates_and_unscales_amp(self):
+        from img_classification.train import train_one_epoch
+        from torch.utils.data import DataLoader, TensorDataset
+        import copy
+
+        model = torch.nn.Sequential(torch.nn.Conv2d(3, 2, 1),
+                                    torch.nn.AdaptiveAvgPool2d(1), torch.nn.Flatten())
+        loader = DataLoader(TensorDataset(torch.ones(2, 3, 2, 2, dtype=torch.uint8),
+                                         torch.tensor([0, 1])), batch_size=2)
+        for amp in (False, True):
+            plain, measured = copy.deepcopy(model), copy.deepcopy(model)
+            monitor = GradientMonitor(measured)
+            for network, observer in ((plain, None), (measured, monitor)):
+                train_one_epoch(network, loader, torch.nn.CrossEntropyLoss(),
+                                torch.optim.SGD(network.parameters(), lr=.1), torch.device('cpu'),
+                                torch.amp.GradScaler('cpu', init_scale=128) if amp else None,
+                                observer)
+            for p, q in zip(plain.parameters(), measured.parameters()):
+                self.assertTrue(torch.equal(p, q))
+            self.assertAlmostEqual(monitor.summary()['layers']['0']['rms_mean'],
+                                   measured[0].weight.grad.float().square().mean().sqrt().item())
+
     def test_device_assignment(self):
         with patch('torch.cuda.is_available', return_value=True), \
                 patch('torch.cuda.device_count', return_value=2):
@@ -95,12 +140,17 @@ class BenchmarkTests(unittest.TestCase):
             for epoch, line in enumerate(paired, 1):
                 self.assertIn(f'Epoch {epoch}/2 | CNN: loss=', line)
                 self.assertIn('| ResNet: loss=', line)
-            for filename in ('test_predictions.png', 'test_accuracy.png', 'benchmark.png', 'architectures.txt'):
+            for filename in ('test_predictions.png', 'test_accuracy.png', 'benchmark.png',
+                             'architectures.txt', 'gradients.png', 'gradients.csv'):
                 self.assertGreater((output / filename).stat().st_size, 0)
             splits = []
             for name in ('cnn', 'resnet'):
                 metrics = json.loads((output / name / 'metrics.json').read_text())
                 self.assertEqual(len(metrics['history']), 2)
+                for row in metrics['history']:
+                    self.assertEqual(len(row['gradients']['layers']), 8)
+                    self.assertEqual(row['gradients']['batches'], 4)
+                    self.assertTrue(all(s['rms_mean'] >= 0 for s in row['gradients']['layers'].values()))
                 self.assertTrue(0 <= metrics['test_accuracy'] <= 1)
                 splits.append(json.loads((output / name / 'split.json').read_text()))
             self.assertEqual(*splits)

@@ -66,7 +66,22 @@ Kết quả ở `outputs/benchmark/<timestamp>/`: `benchmark.csv`, `benchmark.js
 `benchmark.md`, `benchmark.png` (loss, validation accuracy, thời gian mỗi epoch).
 Mỗi thư mục `cnn/`, `resnet/` có checkpoint, metrics, split và predictions riêng.
 Không có số liệu benchmark giả lập: accuracy và hiệu năng được ghi từ lần chạy.
+Mỗi epoch còn lưu `gradients` trong `cnn/metrics.json`, `resnet/metrics.json`;
+`gradients.csv` và `gradients.png` tổng hợp hai model theo epoch và từng Conv.
+Đo RMS của gradient **weights Conv** trên tất cả minibatch, sau backward và
+AMP unscale, trước optimizer step. RMS chuẩn hóa theo số phần tử tensor;
+mean/std tính với trọng số bằng nhau cho mỗi batch (kể cả batch cuối).
+CV = std/mean mô tả độ dao động giữa các batch trong epoch, không phải giữa các seed.
+Tỷ lệ RMS Conv đầu/cuối nhỏ kéo dài là dấu hiệu gradient suy giảm về đầu mạng;
+kết hợp xem RMS tuyệt đối và tỷ lệ phần tử có |gradient| ≤ 1e-8.
+Ngưỡng này chỉ là chỉ báo, không phải tiêu chuẩn kết luận vanishing gradient.
+Batch có gradient không hữu hạn được đếm riêng từng lớp và loại khỏi thống kê
+lớp đó; tỷ lệ không xác định lưu `null`. Biểu đồ symlog giữ cả giá trị 0.
+Kỳ vọng skip giúp ResNet truyền gradient ổn định hơn cần được kiểm chứng bằng
+số đo và nhiều seed; mạng 8 Conv có BatchNorm không đảm bảo CNN sẽ vanishing.
+Gradient nhỏ cũng có thể do loss giảm hoặc head ReLU không hoạt động.
 Thời gian train gồm truyền dữ liệu và optimizer; có đồng bộ CUDA trước/sau đo.
+Thời gian này bao gồm cả chi phí thu thập thống kê gradient.
 Peak memory là tensor memory được cấp phát trong train/validation, không phải
 VRAM reserved, ghi riêng từng tiến trình. Với hai GPU, hai model dùng GPU riêng
 nhưng vẫn chia sẻ CPU, RAM và ổ đĩa. Với một GPU, thời gian còn chịu ảnh hưởng

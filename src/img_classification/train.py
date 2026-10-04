@@ -15,6 +15,7 @@ from img_classification.config import PROCESSED_DIR, load_train_config
 from img_classification.artifacts import save_json, save_checkpoint
 from img_classification.dataset import load_cached_dataset
 from img_classification.models import CNN, ResNet
+from img_classification.gradients import GradientMonitor
 
 
 def prepare_batch(images: torch.Tensor, device: torch.device) -> torch.Tensor:
@@ -29,6 +30,7 @@ def train_one_epoch(
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     scaler: torch.amp.GradScaler | None = None,
+    gradient_monitor: GradientMonitor | None = None,
 ) -> tuple[float, float]:
     model.train()
     total_loss = 0.0
@@ -47,10 +49,15 @@ def train_one_epoch(
             raise RuntimeError("Non-finite training loss; check data and learning rate")
         if scaler is not None:
             scaler.scale(loss).backward()
+            if gradient_monitor is not None:
+                scaler.unscale_(optimizer)
+                gradient_monitor.record()
             scaler.step(optimizer)
             scaler.update()
         else:
             loss.backward()
+            if gradient_monitor is not None:
+                gradient_monitor.record()
             optimizer.step()
 
         batch_size = labels.size(0)
@@ -213,7 +220,10 @@ def main(argv: list[str] | None = None) -> None:
         if device.type == "cuda":
             torch.cuda.synchronize(device)
         epoch_start = time.perf_counter()
-        train_loss, train_accuracy = train_one_epoch(model, train_loader, loss_fn, optimizer, device, scaler)
+        gradient_monitor = GradientMonitor(model)
+        train_loss, train_accuracy = train_one_epoch(
+            model, train_loader, loss_fn, optimizer, device, scaler, gradient_monitor)
+        gradients = gradient_monitor.summary()
         if device.type == "cuda":
             torch.cuda.synchronize(device)
         train_seconds = time.perf_counter() - epoch_start
@@ -222,7 +232,7 @@ def main(argv: list[str] | None = None) -> None:
             raise RuntimeError("Non-finite epoch loss")
         history.append({"epoch": epoch, "train_loss": train_loss,
                         "train_accuracy": train_accuracy, "validation_accuracy": val_accuracy,
-                        "train_seconds": train_seconds,
+                        "train_seconds": train_seconds, "gradients": gradients,
                         "train_images_per_second": len(train_dataset) / train_seconds})
         checkpoint = {"model_name": args.model, "padding": 0 if args.model == "legacy-cnn" else 1,
                       "model_state_dict": model.state_dict(),
@@ -235,8 +245,14 @@ def main(argv: list[str] | None = None) -> None:
             save_checkpoint(checkpoint, output / "best.pt")
         save_json({"history": history, "best_epoch": best_epoch,
                    "best_validation_accuracy": best_accuracy}, output / "metrics.json")
+        first = next(iter(gradients['layers'].values()))
         print(f"Epoch {epoch}/{config.epochs}: loss={train_loss:.4f} "
-              f"train={train_accuracy:.2%} validation={val_accuracy:.2%}", flush=True)
+              f"train={train_accuracy:.2%} validation={val_accuracy:.2%} "
+              f"grad_first_rms={first['rms_mean']} "
+              f"grad_first/last={gradients['first_last_rms_ratio']} "
+              f"grad_first_cv={first['rms_cv']} "
+              f"grad_nonfinite_batches={max(s['nonfinite_batches'] for s in gradients['layers'].values())}",
+              flush=True)
 
     if device.type == "cuda":
         torch.cuda.synchronize(device)

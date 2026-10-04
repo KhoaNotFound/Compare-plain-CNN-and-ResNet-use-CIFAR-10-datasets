@@ -37,6 +37,11 @@ Sau khi hoàn tất, mở các plot trong thư mục kết quả:
 - `test_predictions.png`: cùng 16 ảnh test đầu tiên, nhãn thật và dự đoán của cả hai model; xanh đúng, đỏ sai.
 - `test_accuracy.png`: accuracy trên toàn bộ tập test của hai model.
 - `benchmark.png`: loss, validation accuracy và thời gian theo epoch.
+- `gradients.csv`, `gradients.png`: RMS gradient từng Conv, tỷ lệ Conv đầu/cuối,
+  CV giữa các batch và tỷ lệ gradient gần 0 theo epoch cho CNN/ResNet.
+  Đo sau AMP unscale, trước optimizer; chi tiết lưu trong `history[].gradients`
+  của mỗi `metrics.json`. Dùng số đo để kiểm chứng kỳ vọng ResNet ổn định hơn,
+  không mặc định CNN sẽ vanishing (xem [cách đọc chỉ số](docs/cnn-vs-resnet.md)).
 
 Plot phân biệt accuracy của subset với accuracy toàn tập test. Dự đoán dùng
 checkpoint tốt nhất theo validation trong 50 epoch. Lệnh terminal lưu PNG và

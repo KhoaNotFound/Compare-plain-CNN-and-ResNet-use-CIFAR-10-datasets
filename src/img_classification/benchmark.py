@@ -14,6 +14,7 @@ from threading import Thread
 
 from .artifacts import save_json
 from .config import load_train_config
+from .gradients import export_gradient_comparison
 
 
 def model_devices(requested: str, require_two_gpus: bool = False) -> dict[str, str]:
@@ -246,6 +247,15 @@ def main() -> None:
                'Wall seconds also include validation and checkpoints, excluding data preparation and final test.',
                'Peak CUDA memory is allocated tensor memory during training/validation, not reserved GPU memory.',
                'Evaluation uses float32; training AMP follows config on CUDA.']
+    report += ['', 'Gradient diagnostics: [epoch/layer CSV](gradients.csv), [plots](gradients.png).',
+               'Conv weight gradient RMS is measured after backward and AMP unscale, before optimizer step.',
+               'Epoch means/std/CV weight each batch equally; near-zero means |gradient| <= 1e-8.',
+               'Nonfinite batches are counted per layer and excluded from its statistics; undefined ratios are null.',
+               'A persistently small first/last RMS ratio suggests attenuation; lower CV means less batch variation.',
+               'Inspect absolute RMS and near-zero fractions too: a stable zero gradient is not healthy.',
+               'ResNet stability is a hypothesis, not a guaranteed outcome for these eight-layer BN models.',
+               'Training timings include gradient instrumentation.']
+    export_gradient_comparison(output, histories)
     (output / 'benchmark.md').write_text('\n'.join(report) + '\n')
     import matplotlib.pyplot as plt
     fig, axes = plt.subplots(1, 3, figsize=(15, 4))
@@ -263,7 +273,7 @@ def main() -> None:
     plot_test_comparison(output)
     print('\n'.join(report), flush=True)
     print(f'\nArtifacts: {output.resolve()}', flush=True)
-    for filename in ('test_predictions.png', 'test_accuracy.png', 'benchmark.png'):
+    for filename in ('test_predictions.png', 'test_accuracy.png', 'benchmark.png', 'gradients.png'):
         print(f'Plot: {(output / filename).resolve()}', flush=True)
 
 
