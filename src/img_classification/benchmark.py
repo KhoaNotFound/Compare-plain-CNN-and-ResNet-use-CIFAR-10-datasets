@@ -16,13 +16,18 @@ from .artifacts import save_json
 from .config import load_train_config
 
 
-def model_devices(requested: str) -> dict[str, str]:
+def model_devices(requested: str, require_two_gpus: bool = False) -> dict[str, str]:
     """Assign one visible GPU per model when at least two are available."""
     import torch
 
     if requested == 'cpu':
+        if require_two_gpus:
+            raise ValueError('--require-two-gpus cannot be used with --device cpu')
         return dict(cnn='cpu', resnet='cpu')
     count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+    if require_two_gpus and count < 2:
+        raise ValueError(f'Two CUDA GPUs required, but PyTorch sees {count}. '
+                         'Check the Kaggle accelerator and CUDA_VISIBLE_DEVICES.')
     if not count:
         if requested == 'cuda':
             raise ValueError('CUDA requested, but no CUDA GPU is available.')
@@ -165,6 +170,8 @@ def main() -> None:
     parser.add_argument('--val-fraction', type=float)
     parser.add_argument('--amp', action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument('--device', choices=('auto', 'cpu', 'cuda'), default='auto')
+    parser.add_argument('--require-two-gpus', action='store_true',
+                        help='Fail before data preparation unless each model can use its own GPU')
     parser.add_argument('--output-dir', type=Path)
     args = parser.parse_args()
     try:
@@ -172,8 +179,13 @@ def main() -> None:
                                   lr=args.lr, seed=args.seed, val_fraction=args.val_fraction, amp=args.amp)
     except (ValueError, OSError) as error:
         parser.error(str(error))
+    import torch
+    print(f'Benchmark source: {Path(__file__).resolve()}', flush=True)
+    print(f'Python: {sys.executable}; PyTorch: {torch.__version__}; '
+          f'visible CUDA GPUs: {torch.cuda.device_count()}; '
+          f'CUDA_VISIBLE_DEVICES={os.environ.get("CUDA_VISIBLE_DEVICES", "<unset>")}', flush=True)
     try:
-        devices = model_devices(args.device)
+        devices = model_devices(args.device, args.require_two_gpus)
     except ValueError as error:
         parser.error(str(error))
     output = args.output_dir or Path('outputs/benchmark') / datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S-%f')
@@ -188,6 +200,9 @@ def main() -> None:
     save_json(config.to_dict(), output / 'config.json')
     save_json(devices, output / 'devices.json')
     print(f"Devices: CNN → {devices['cnn']}; ResNet → {devices['resnet']}", flush=True)
+    if devices['cnn'] == devices['resnet'] == 'cuda:0':
+        print('Only one CUDA GPU is visible: both models will share it. '
+              'Use --require-two-gpus to reject this fallback.', flush=True)
     subprocess.run([sys.executable, '-m', 'img_classification.prepare_data'], env=env, check=True)
     common = []
     for key, value in config.to_dict().items():

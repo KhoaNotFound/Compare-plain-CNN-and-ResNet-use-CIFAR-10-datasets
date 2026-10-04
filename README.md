@@ -20,6 +20,11 @@ Hai model độc lập, mỗi model train 50 epoch. Với T4 x2, benchmark tự 
 vào `cuda:0`, ResNet vào `cuda:1`, chạy đồng thời và chuẩn bị dữ liệu một lần.
 Nếu chỉ có một GPU, hai model dùng chung GPU; không có CUDA thì dùng CPU.
 Phân bổ được in trước khi train và lưu ở `devices.json`.
+Trên Kaggle T4 x2, dùng `python train.py --require-two-gpus` để dừng ngay nếu
+PyTorch không nhìn thấy đủ hai GPU. Log đầu run in đường dẫn source, Python,
+số GPU và `CUDA_VISIBLE_DEVICES`; log từng model in PID và device của weights.
+Chạy file `train.py` ở gốc repo: `main.py`, `scripts/train.py` và
+`python -m img_classification.train` là các entry point train một model.
 Log trực tiếp ghép theo cùng epoch:
 
 ```text

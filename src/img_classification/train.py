@@ -3,6 +3,7 @@
 import argparse
 import random
 import math
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -203,6 +204,8 @@ def main(argv: list[str] | None = None) -> None:
     save_json({"train_indices": train_dataset.indices, "validation_indices": val_dataset.indices},
               output / "split.json")
     print(f"Device: {device}; AMP: {scaler is not None}; artifacts: {output}", flush=True)
+    print(f'Model: {args.model}; PID: {os.getpid()}; parameter device: {next(model.parameters()).device}',
+          flush=True)
     history = []
     best_accuracy = -1.0
     best_epoch = 0

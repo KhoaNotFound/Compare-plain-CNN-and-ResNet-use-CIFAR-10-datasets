@@ -21,14 +21,21 @@ class BenchmarkTests(unittest.TestCase):
                 patch('torch.cuda.device_count', return_value=2):
             self.assertEqual(model_devices('auto'), {'cnn': 'cuda:0', 'resnet': 'cuda:1'})
             self.assertEqual(model_devices('cuda'), {'cnn': 'cuda:0', 'resnet': 'cuda:1'})
+            self.assertEqual(model_devices('cuda', True), {'cnn': 'cuda:0', 'resnet': 'cuda:1'})
             self.assertEqual(model_devices('cpu'), {'cnn': 'cpu', 'resnet': 'cpu'})
         with patch('torch.cuda.is_available', return_value=True), \
                 patch('torch.cuda.device_count', return_value=1):
             self.assertEqual(model_devices('auto'), {'cnn': 'cuda:0', 'resnet': 'cuda:0'})
+            with self.assertRaisesRegex(ValueError, 'PyTorch sees 1'):
+                model_devices('auto', True)
         with patch('torch.cuda.is_available', return_value=False):
             self.assertEqual(model_devices('auto'), {'cnn': 'cpu', 'resnet': 'cpu'})
             with self.assertRaisesRegex(ValueError, 'no CUDA GPU'):
                 model_devices('cuda')
+            with self.assertRaisesRegex(ValueError, 'PyTorch sees 0'):
+                model_devices('auto', True)
+            with self.assertRaisesRegex(ValueError, 'cannot be used'):
+                model_devices('cpu', True)
 
     def test_children_receive_distinct_devices(self):
         children = [Mock(stdout=io.StringIO(''), wait=Mock(return_value=0),
@@ -77,6 +84,9 @@ class BenchmarkTests(unittest.TestCase):
                                   '--batch-size', '2', '--device', 'cpu', '--output-dir', str(output)],
                                  cwd=work, env=env, capture_output=True, text=True, timeout=120)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertIn('Benchmark source:', run.stdout)
+            self.assertIn('Model: cnn; PID:', run.stdout)
+            self.assertIn('Model: resnet; PID:', run.stdout)
             self.assertEqual(json.loads((output / 'devices.json').read_text()),
                              {'cnn': 'cpu', 'resnet': 'cpu'})
             lines = (output / 'training.log').read_text().splitlines()
