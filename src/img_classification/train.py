@@ -143,7 +143,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--val-fraction", type=float)
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--output-dir", type=Path)
-    parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
+    parser.add_argument("--device", default="auto", help="auto, cpu, cuda, or cuda:N")
     parser.add_argument("--model", choices=("legacy-cnn", "cnn", "resnet"), default="legacy-cnn")
     args = parser.parse_args(argv)
     try:
@@ -151,10 +151,19 @@ def main(argv: list[str] | None = None) -> None:
                                    lr=args.lr, seed=args.seed, val_fraction=args.val_fraction, amp=args.amp)
     except (ValueError, OSError) as error:
         parser.error(str(error))
-    if args.device == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA requested, but no CUDA GPU is available.")
     selected_device = ("cuda" if torch.cuda.is_available() else "cpu") if args.device == "auto" else args.device
-    device = torch.device(selected_device)
+    try:
+        device = torch.device(selected_device)
+    except (RuntimeError, ValueError) as error:
+        parser.error(str(error))
+    if device.type not in ('cpu', 'cuda'):
+        parser.error('Device must be auto, cpu, cuda, or cuda:N')
+    if device.type == 'cuda':
+        if not torch.cuda.is_available():
+            parser.error('CUDA requested, but no CUDA GPU is available.')
+        if device.index is not None and device.index >= torch.cuda.device_count():
+            parser.error(f'CUDA device unavailable: {device}')
+        torch.cuda.set_device(device.index if device.index is not None else 0)
     output = args.output_dir or Path("outputs/local") / datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
     output.mkdir(parents=True, exist_ok=True)
     if any((output / name).exists() for name in ("checkpoint.pt", "best.pt", "metrics.json", "config.json")):

@@ -16,7 +16,11 @@ Tự chuẩn bị CIFAR-10, train đồng thời CNN và ResNet với cấu hìn
 `configs/cifar10.toml`, xuất bảng so sánh accuracy/thời gian/VRAM và biểu đồ
 vào `outputs/benchmark/<timestamp>/`. Xem [kiến trúc và cách so sánh](docs/cnn-vs-resnet.md).
 Cặp đối chứng cùng 8 Conv và head; ResNet thêm 3 skip connection.
-Hai model độc lập, mỗi model train 50 epoch. Log trực tiếp ghép theo cùng epoch:
+Hai model độc lập, mỗi model train 50 epoch. Với T4 x2, benchmark tự gán CNN
+vào `cuda:0`, ResNet vào `cuda:1`, chạy đồng thời và chuẩn bị dữ liệu một lần.
+Nếu chỉ có một GPU, hai model dùng chung GPU; không có CUDA thì dùng CPU.
+Phân bổ được in trước khi train và lưu ở `devices.json`.
+Log trực tiếp ghép theo cùng epoch:
 
 ```text
 Epoch 1/50 | CNN: loss=... train=... validation=... | ResNet: loss=... train=... validation=...
@@ -71,7 +75,8 @@ Mỗi build tạo kernel riêng. Push lại cùng build tạo phiên bản mới
 phiên bản mới nhất. Nên build mới cho mỗi thí nghiệm.
 
 GPU mặc định `NvidiaTeslaT4`; đổi bằng `push --accelerator NvidiaL4` nếu tài khoản
-hỗ trợ. Training dùng **một GPU**, kể cả khi Kaggle cấp hai T4.
+hỗ trợ. Runner `tools/kaggle_workflow.py` train đơn dùng **một GPU**;
+benchmark `train.py` tự dùng **hai GPU** nếu có.
 
 ## Cấu trúc và trách nhiệm
 

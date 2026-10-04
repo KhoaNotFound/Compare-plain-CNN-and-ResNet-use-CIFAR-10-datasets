@@ -51,8 +51,10 @@ uv run train.py
 ```
 
 Lệnh tự chuẩn bị CIFAR-10 nếu chưa có cache, train đồng thời CNN và ResNet, mỗi model
-50 epochs theo `configs/cifar10.toml`, tự chọn CUDA và AMP nếu có GPU. Dùng một
-GPU; nếu không có CUDA sẽ chạy CPU và ghi device vào báo cáo. Chạy notebook
+50 epochs theo `configs/cifar10.toml`, tự chọn CUDA và AMP nếu có GPU. Với T4 x2,
+CNN dùng `cuda:0`, ResNet dùng `cuda:1`; với một GPU, hai model dùng chung GPU.
+Nếu không có CUDA sẽ chạy CPU và ghi device vào báo cáo. Phân bổ GPU lưu trong
+`devices.json`, theo thứ tự GPU hiển thị cho PyTorch. Chạy notebook
 thì thêm `!` trước lệnh. Cần có `uv` trong môi trường.
 
 Hai tiến trình được reset cùng seed nên các trọng số có cùng khởi tạo, cùng
@@ -66,9 +68,9 @@ Mỗi thư mục `cnn/`, `resnet/` có checkpoint, metrics, split và prediction
 Không có số liệu benchmark giả lập: accuracy và hiệu năng được ghi từ lần chạy.
 Thời gian train gồm truyền dữ liệu và optimizer; có đồng bộ CUDA trước/sau đo.
 Peak memory là tensor memory được cấp phát trong train/validation, không phải
-VRAM reserved, ghi riêng từng tiến trình. Hai model dùng chung GPU khi chạy
-đồng thời nên thời gian có ảnh hưởng tranh chấp tài nguyên; không phải phép đo
-hiệu năng riêng lẻ hay latency inference.
+VRAM reserved, ghi riêng từng tiến trình. Với hai GPU, hai model dùng GPU riêng
+nhưng vẫn chia sẻ CPU, RAM và ổ đĩa. Với một GPU, thời gian còn chịu ảnh hưởng
+tranh chấp GPU; đây không phải phép đo latency inference.
 
 Có thể tùy chỉnh mà không sửa code:
 

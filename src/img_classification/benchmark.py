@@ -16,7 +16,22 @@ from .artifacts import save_json
 from .config import load_train_config
 
 
-def train_models(output: Path, common: list[str], env: dict[str, str]) -> None:
+def model_devices(requested: str) -> dict[str, str]:
+    """Assign one visible GPU per model when at least two are available."""
+    import torch
+
+    if requested == 'cpu':
+        return dict(cnn='cpu', resnet='cpu')
+    count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+    if not count:
+        if requested == 'cuda':
+            raise ValueError('CUDA requested, but no CUDA GPU is available.')
+        return dict(cnn='cpu', resnet='cpu')
+    return dict(cnn='cuda:0', resnet='cuda:1' if count >= 2 else 'cuda:0')
+
+
+def train_models(output: Path, common: list[str], env: dict[str, str],
+                 devices: dict[str, str]) -> None:
     """Stream both child processes and pair metrics by epoch, never by arrival order."""
     events = Queue()
     processes = {}
@@ -36,7 +51,7 @@ def train_models(output: Path, common: list[str], env: dict[str, str]) -> None:
         for name in ('cnn', 'resnet'):
             processes[name] = subprocess.Popen(
                 [sys.executable, '-u', '-m', 'img_classification.train', '--model', name,
-                 '--output-dir', str(output / name), *common], env=env,
+                 '--output-dir', str(output / name), '--device', devices[name], *common], env=env,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
             reader = Thread(target=read_output, args=(name, processes[name]), daemon=True)
             reader.start()
@@ -157,6 +172,10 @@ def main() -> None:
                                   lr=args.lr, seed=args.seed, val_fraction=args.val_fraction, amp=args.amp)
     except (ValueError, OSError) as error:
         parser.error(str(error))
+    try:
+        devices = model_devices(args.device)
+    except ValueError as error:
+        parser.error(str(error))
     output = args.output_dir or Path('outputs/benchmark') / datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S-%f')
     if output.exists() and any(output.iterdir()):
         parser.error(f'Run already exists: {output}. Choose a fresh --output-dir.')
@@ -167,8 +186,10 @@ def main() -> None:
     # Each model gets a fresh process, RNG, loader, optimizer and CUDA allocator.
     env = {**os.environ, 'MPLBACKEND': 'Agg'}
     save_json(config.to_dict(), output / 'config.json')
+    save_json(devices, output / 'devices.json')
+    print(f"Devices: CNN → {devices['cnn']}; ResNet → {devices['resnet']}", flush=True)
     subprocess.run([sys.executable, '-m', 'img_classification.prepare_data'], env=env, check=True)
-    common = ['--device', args.device]
+    common = []
     for key, value in config.to_dict().items():
         if key == 'amp':
             common.append('--amp' if value else '--no-amp')
@@ -176,7 +197,7 @@ def main() -> None:
             common.extend(['--' + key.replace('_', '-'), str(value)])
     results = []
     histories = {}
-    train_models(output, common, env)
+    train_models(output, common, env, devices)
     for name in ('cnn', 'resnet'):
         metrics = json.loads((output / name / 'metrics.json').read_text())
         histories[name] = metrics['history']
@@ -204,7 +225,8 @@ def main() -> None:
     report += ['', f'ResNet − CNN test accuracy: {delta:+.2f} percentage points.', '',
                'Matched padded CNN vs small ResNet; only three identity additions differ.',
                'One seed; this is not statistical evidence of superiority.',
-               'Models train concurrently on the selected device; timings include resource contention.',
+               f"Concurrent devices: CNN={devices['cnn']}, ResNet={devices['resnet']}. "
+               'Timings include shared host resources and GPU contention when using the same GPU.',
                'Train seconds include batches, transfers and optimizer steps, including first-epoch startup.',
                'Wall seconds also include validation and checkpoints, excluding data preparation and final test.',
                'Peak CUDA memory is allocated tensor memory during training/validation, not reserved GPU memory.',

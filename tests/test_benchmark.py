@@ -1,18 +1,47 @@
 """Offline checks for independent models and concurrent training reports."""
 import json
+import io
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
 
 import torch
 
 from img_classification.models import CNN, ResNet
+from img_classification.benchmark import model_devices, train_models
 
 
 class BenchmarkTests(unittest.TestCase):
+    def test_device_assignment(self):
+        with patch('torch.cuda.is_available', return_value=True), \
+                patch('torch.cuda.device_count', return_value=2):
+            self.assertEqual(model_devices('auto'), {'cnn': 'cuda:0', 'resnet': 'cuda:1'})
+            self.assertEqual(model_devices('cuda'), {'cnn': 'cuda:0', 'resnet': 'cuda:1'})
+            self.assertEqual(model_devices('cpu'), {'cnn': 'cpu', 'resnet': 'cpu'})
+        with patch('torch.cuda.is_available', return_value=True), \
+                patch('torch.cuda.device_count', return_value=1):
+            self.assertEqual(model_devices('auto'), {'cnn': 'cuda:0', 'resnet': 'cuda:0'})
+        with patch('torch.cuda.is_available', return_value=False):
+            self.assertEqual(model_devices('auto'), {'cnn': 'cpu', 'resnet': 'cpu'})
+            with self.assertRaisesRegex(ValueError, 'no CUDA GPU'):
+                model_devices('cuda')
+
+    def test_children_receive_distinct_devices(self):
+        children = [Mock(stdout=io.StringIO(''), wait=Mock(return_value=0),
+                         poll=Mock(return_value=0)) for _ in range(2)]
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch('img_classification.benchmark.subprocess.Popen', side_effect=children) as spawn:
+            train_models(Path(temporary), ['--epochs', '1'], dict(os.environ),
+                         {'cnn': 'cuda:0', 'resnet': 'cuda:1'})
+            for call, name, device in zip(spawn.call_args_list, ('cnn', 'resnet'), ('cuda:0', 'cuda:1')):
+                command = call.args[0]
+                self.assertEqual(command[command.index('--model') + 1], name)
+                self.assertEqual(command[command.index('--device') + 1], device)
+
     def test_independent_models_keep_matched_initialization_and_skip_behavior(self):
         self.assertNotIn(CNN, ResNet.__mro__)
         torch.manual_seed(42)
@@ -48,6 +77,8 @@ class BenchmarkTests(unittest.TestCase):
                                   '--batch-size', '2', '--device', 'cpu', '--output-dir', str(output)],
                                  cwd=work, env=env, capture_output=True, text=True, timeout=120)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertEqual(json.loads((output / 'devices.json').read_text()),
+                             {'cnn': 'cpu', 'resnet': 'cpu'})
             lines = (output / 'training.log').read_text().splitlines()
             paired = [line for line in lines if line.startswith('Epoch ')]
             self.assertEqual(len(paired), 2)
