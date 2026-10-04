@@ -7,11 +7,14 @@ import torch.nn.init as init
 class CNN(nn.Module):
     """Eight Conv + ReLU layers followed by pooling and two Linear layers."""
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
+    def __init__(self, *args: Any, padding: int = 0, residual: bool = False, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
+        if residual and padding != 1:
+            raise ValueError("Residual connections require padding=1")
+        self.residual = residual
 
         self.convs = nn.ModuleList([
-            nn.Conv2d(3 if index == 0 else 32, 32, kernel_size=3, bias=True)
+            nn.Conv2d(3 if index == 0 else 32, 32, kernel_size=3, padding=padding, bias=True)
             for index in range(8)
         ])
         self.batch_norms = nn.ModuleList([
@@ -54,11 +57,17 @@ class CNN(nn.Module):
         if x.ndim != 4:
             raise ValueError(f"Expected input shaped [N, C, H, W], got {tuple(x.shape)}")
 
-        # Eight unpadded 3x3 convolutions shrink 32x32 inputs to 16x16.
+        # Legacy padding=0 shrinks to 16x16; benchmark padding=1 keeps 32x32.
         relu_features = x
-        for conv, batch_norm in zip(self.convs, self.batch_norms):
+        for index, (conv, batch_norm) in enumerate(zip(self.convs, self.batch_norms)):
+            # Layers 1–2 form the stem; pairs 3–4, 5–6, 7–8 form blocks.
+            if index in (2, 4, 6):
+                identity = relu_features
             conv_features = conv(relu_features)
             normalized_features = batch_norm(conv_features)
+            # The ONLY extra operation in ResNet: add the block input before ReLU.
+            if self.residual and index in (3, 5, 7):
+                normalized_features = normalized_features + identity
             relu_features = self.relu(normalized_features)
         pooled_features = self.pool(relu_features)
         pooled_features = self.avgpool(pooled_features)

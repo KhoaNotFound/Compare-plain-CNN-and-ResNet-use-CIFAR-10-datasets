@@ -3,6 +3,7 @@
 import argparse
 import random
 import math
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -12,7 +13,7 @@ from torch.utils.data import DataLoader, random_split
 from img_classification.config import PROCESSED_DIR, load_train_config
 from img_classification.artifacts import save_json, save_checkpoint
 from img_classification.dataset import load_cached_dataset
-from img_classification.models import CNN
+from img_classification.models import CNN, ResNet
 
 
 def prepare_batch(images: torch.Tensor, device: torch.device) -> torch.Tensor:
@@ -57,65 +58,6 @@ def train_one_epoch(
         total_examples += batch_size
 
     return total_loss / total_examples, total_correct / total_examples
-
-# def train_one_epoch(
-#     model: CNN,
-#     loader: DataLoader,
-#     loss_fn: torch.nn.Module,
-#     optimizer: torch.optim.Optimizer,
-#     device: torch.device,
-#     scaler: torch.amp.GradScaler | None = None,
-# ) -> tuple[float, float]:
-#     model.train()
-#     total_loss = 0.0
-#     total_correct = 0
-#     total_examples = 0
-
-#     for images, labels in loader:
-#         images = prepare_batch(images, device)
-#         labels = labels.to(device, non_blocking=True)
-
-#         optimizer.zero_grad(set_to_none=True)
-#         with torch.autocast(device_type=device.type, enabled=scaler is not None):
-#             logits = model(images)
-#             loss = loss_fn(logits, labels)
-
-#         if not torch.isfinite(loss):
-#             raise RuntimeError("Non-finite training loss; check data and learning rate")
-
-#         if scaler is not None:
-#             scaler.scale(loss).backward()
-#             scaler.unscale_(optimizer)  # Đưa gradient về giá trị thực trước khi tính norm
-#         else:
-#             loss.backward()
-
-#         # 1. Kiểm tra gradient norm của từng layer
-#         grad_norms = [p.grad.norm().item() for p in model.parameters() if p.grad is not None]
-
-#         if not grad_norms:
-#             print("[CẢNH BÁO]: Không có gradient nào được tính! Kiểm tra require_grad hoặc loss.backward().")
-#         elif all(g == 0.0 for g in grad_norms):
-#             print("[CẢNH BÁO]: Gradient bị triệt tiêu hoàn toàn về 0.0 (Dying ReLU hoặc Vanishing Gradient)!")
-#         else:
-#             print(f"Gradient norm min: {min(grad_norms):.6f}, max: {max(grad_norms):.6f}")
-
-#         # 2. Kiểm tra xem scaler có skip optimizer step không (nếu dùng FP16)
-#         if scaler is not None:
-#             scale_before = scaler.get_scale()
-#             scaler.step(optimizer)
-#             scaler.update()
-#             scale_after = scaler.get_scale()
-#             if scale_after < scale_before:
-#                 print("[CẢNH BÁO]: Gradient bị inf/NaN, scaler đã skip bước cập nhật optimizer!")
-#         else:
-#             optimizer.step()
-
-#         batch_size = labels.size(0)
-#         total_loss += loss.item() * batch_size
-#         total_correct += (logits.argmax(dim=1) == labels).sum().item()
-#         total_examples += batch_size
-
-#     return total_loss / total_examples, total_correct / total_examples
 
 @torch.no_grad()
 def evaluate(
@@ -191,7 +133,7 @@ def plot_predictions(
     plt.close(fig)
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Train CIFAR-10; select weights using validation only.")
     parser.add_argument("--config", type=Path)
     parser.add_argument("--epochs", type=int)
@@ -202,7 +144,8 @@ def main() -> None:
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
-    args = parser.parse_args()
+    parser.add_argument("--model", choices=("legacy-cnn", "cnn", "resnet"), default="legacy-cnn")
+    args = parser.parse_args(argv)
     try:
         config = load_train_config(args.config, epochs=args.epochs, batch_size=args.batch_size,
                                    lr=args.lr, seed=args.seed, val_fraction=args.val_fraction, amp=args.amp)
@@ -238,7 +181,12 @@ def main() -> None:
                               generator=torch.Generator().manual_seed(config.seed), **loader_options)
     val_loader = DataLoader(val_dataset, **loader_options)
     test_loader = DataLoader(test_dataset, **loader_options)
-    model = CNN().to(device)
+    model = {"legacy-cnn": CNN, "cnn": lambda: CNN(padding=1), "resnet": ResNet}[args.model]().to(device)
+    parameter_count = sum(p.numel() for p in model.parameters())
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+        torch.cuda.reset_peak_memory_stats(device)
+    training_start = time.perf_counter()
     loss_fn = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=config.lr)
     scaler = torch.amp.GradScaler("cuda") if config.amp and device.type == "cuda" else None
@@ -250,13 +198,22 @@ def main() -> None:
     best_accuracy = -1.0
     best_epoch = 0
     for epoch in range(1, config.epochs + 1):
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        epoch_start = time.perf_counter()
         train_loss, train_accuracy = train_one_epoch(model, train_loader, loss_fn, optimizer, device, scaler)
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        train_seconds = time.perf_counter() - epoch_start
         val_accuracy, _, _, _ = evaluate(model, val_loader, device, preview_count=0)
         if not math.isfinite(train_loss):
             raise RuntimeError("Non-finite epoch loss")
         history.append({"epoch": epoch, "train_loss": train_loss,
-                        "train_accuracy": train_accuracy, "validation_accuracy": val_accuracy})
-        checkpoint = {"model_state_dict": model.state_dict(),
+                        "train_accuracy": train_accuracy, "validation_accuracy": val_accuracy,
+                        "train_seconds": train_seconds,
+                        "train_images_per_second": len(train_dataset) / train_seconds})
+        checkpoint = {"model_name": args.model, "padding": 0 if args.model == "legacy-cnn" else 1,
+                      "model_state_dict": model.state_dict(),
                       "optimizer_state_dict": optimizer.state_dict(),
                       "scaler_state_dict": scaler.state_dict() if scaler is not None else None,
                       "epoch": epoch, "class_names": class_names, "config": config.to_dict()}
@@ -269,11 +226,22 @@ def main() -> None:
         print(f"Epoch {epoch}/{config.epochs}: loss={train_loss:.4f} "
               f"train={train_accuracy:.2%} validation={val_accuracy:.2%}", flush=True)
 
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    training_wall_seconds = time.perf_counter() - training_start
+    peak_gpu_memory_mb = torch.cuda.max_memory_allocated(device) / 1024**2 if device.type == "cuda" else None
     best = torch.load(output / "best.pt", map_location=device, weights_only=True)
     model.load_state_dict(best["model_state_dict"])
     test_accuracy, images, labels, predictions = evaluate(model, test_loader, device)
     save_json({"history": history, "best_epoch": best_epoch,
                "best_validation_accuracy": best_accuracy, "test_accuracy": test_accuracy,
+               "model_name": args.model, "parameters": parameter_count,
+               "training_wall_seconds": training_wall_seconds,
+               "train_seconds": sum(row["train_seconds"] for row in history),
+               "train_images_per_second": len(train_dataset) * config.epochs / sum(row["train_seconds"] for row in history),
+               "peak_gpu_memory_mb": peak_gpu_memory_mb,
+               "gpu_name": torch.cuda.get_device_name(device) if device.type == "cuda" else None,
+               "cuda_version": torch.version.cuda,
                "device": str(device), "amp_enabled": scaler is not None,
                "config": config.to_dict(), "torch_version": str(torch.__version__)}, output / "metrics.json")
     plot_predictions(images, labels, predictions, class_names, output / "predictions.png")

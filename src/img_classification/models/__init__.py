@@ -1,4 +1,5 @@
-"""Model implementations; add new architectures here."""
+"""Model implementations."""
 from .cnn import CNN
+from .resnet import ResNet
 
-__all__ = ["CNN"]
+__all__ = ["CNN", "ResNet"]

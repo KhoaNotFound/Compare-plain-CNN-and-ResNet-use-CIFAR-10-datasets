@@ -4,6 +4,19 @@ Code Python dùng chung ở local và Kaggle. Chỉnh code trên máy cá nhân,
 lên Kaggle để train, sau đó tải artifacts về. Đây là batch job, không phải SSH hay
 remote debugger. Python local **3.12+**, quản lý môi trường bằng `uv`.
 
+## Benchmark CNN và ResNet trên Kaggle
+
+Bật GPU, mở terminal tại thư mục repository và chạy:
+
+```bash
+uv run train.py
+```
+
+Tự chuẩn bị CIFAR-10, train CNN rồi ResNet với cấu hình trong
+`configs/cifar10.toml`, xuất bảng so sánh accuracy/thời gian/VRAM và biểu đồ
+vào `outputs/benchmark/<timestamp>/`. Xem [kiến trúc và cách so sánh](docs/cnn-vs-resnet.md).
+Cặp đối chứng cùng 8 Conv và head; ResNet thêm 3 skip connection.
+
 ## Bắt đầu: kết nối và chạy
 
 Chạy các lệnh từ thư mục gốc repository. Chỉ cần thay `YOUR_USERNAME` bằng username Kaggle.
@@ -64,10 +77,9 @@ docs/engineering-playbook.md  Quy trình thiết kế áp dụng cho dự án sa
 .github/workflows/ci.yml       Chạy test tự động trên GitHub
 ```
 
-`data/`, `build/`, `outputs/`, `.venv/` không vào Git. `models/resnet.py` là chỗ dự
-kiến triển khai, chưa cung cấp ResNet. Kiến trúc CNN đang giữ nguyên để không đổi
-baseline cùng lúc refactor; head 32→3→10 có thể hạn chế khả năng học. Muốn cải tiến
-accuracy: thực hiện thí nghiệm riêng, so sánh bằng validation.
+`data/`, `build/`, `outputs/`, `.venv/` không vào Git. `models/resnet.py`
+triển khai ResNet nhỏ dùng cùng backbone CNN với padding 1, thêm identity skip.
+CNN mặc định giữ padding 0 để tương thích các lệnh train đơn cũ.
 
 ## Phát triển và kiểm tra local
 
@@ -114,8 +126,7 @@ muốn tái lập dữ liệu tuyệt đối cần lưu/version hóa cache hoặ
 
 Cache giữ ảnh uint8 `[N,3,32,32]` trong CPU RAM; chuyển float và chia 255 trên device.
 AMP chỉ bật khi train CUDA, evaluation dùng float32. Loader dùng 0 worker vì dữ
-liệu đã nằm trong RAM; chỉ đổi sau khi đo bottleneck. Không có benchmark GPU nên
-chưa khẳng định mức tăng tốc.
+liệu đã nằm trong RAM; chỉ đổi sau khi đo bottleneck. Benchmark mới đo tốc độ và VRAM thực tế khi chạy `uv run train.py`.
 
 Runner giữ nguyên PyTorch/CUDA có sẵn trên Kaggle, cài các thư viện còn thiếu,
 ghi lại `pip freeze`. Không chạy `uv sync` trên Kaggle; lockfile chỉ khóa môi trường
